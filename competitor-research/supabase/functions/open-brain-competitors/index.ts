@@ -85,7 +85,7 @@ server.registerTool(
       "Search competitor and creator research by meaning. Use for thematic/cross-creator research and PTH angle discovery. Optionally scope to a single creator for semantic search within their content.",
     inputSchema: {
       query: z.string().describe("What to search for"),
-      limit: z.number().optional().default(10),
+      limit: z.number().optional().default(20),
       threshold: z.number().optional().default(0.3),
       creator: z.string().optional().describe("Scope search to a specific creator"),
     },
@@ -168,10 +168,12 @@ server.registerTool(
   {
     title: "List Competitor Content",
     description:
-      "List captured competitor content with filters. Use for single-creator audits and chronological browsing. This is your primary view for weekly research sessions — default to filtering by creator and/or last 7 days.",
+      "List captured competitor content with filters. Use for single-creator audits and chronological browsing. Pass a single id with full_text=true to get the complete text of one chunk instead of a preview.",
     inputSchema: {
       limit: z.number().optional().default(10),
       offset: z.number().optional().default(0).describe("Pagination offset"),
+      id: z.string().optional().describe("Fetch a single chunk by ID"),
+      full_text: z.boolean().optional().default(false).describe("Return full content instead of 300-char preview — use with id to read a specific chunk completely"),
       creator: z.string().optional().describe("Filter by creator name"),
       source_type: z.string().optional().describe("Filter by source type: article_summary, strategy_observation, content_analysis, audience_insight, positioning_note"),
       chunk_type: z.string().optional().describe("Filter by chunk type"),
@@ -181,8 +183,38 @@ server.registerTool(
       content_id: z.string().optional().describe("Filter to all chunks from a specific piece of content"),
     },
   },
-  async ({ limit, offset, creator, source_type, chunk_type, topic, days, platform, content_id }) => {
+  async ({ limit, offset, id, full_text, creator, source_type, chunk_type, topic, days, platform, content_id }) => {
     try {
+      // Single item full-text fetch
+      if (id) {
+        const { data, error } = await supabase
+          .from("competitor_content")
+          .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type, content_id")
+          .eq("id", id)
+          .maybeSingle();
+
+        if (error) return { content: [{ type: "text" as const, text: `Error: ${error.message}` }], isError: true };
+        if (!data) return { content: [{ type: "text" as const, text: `No content found with ID ${id}.` }], isError: true };
+
+        const m = data.metadata || {};
+        const parts = [
+          `ID: ${data.id}`,
+          `Creator: ${data.creator || m.creator || "unknown"}`,
+          `Platform: ${data.platform || m.platform || "unknown"}`,
+          `Source Type: ${data.source_type || m.type || "unknown"}`,
+          `Chunk Type: ${data.chunk_type || "unknown"}`,
+          `Topic: ${data.topic || "none"}`,
+          `Article Title: ${data.article_title || "none"}`,
+          `Posted: ${data.posted_date || "unknown"}`,
+          `URL: ${data.content_url || "none"}`,
+          `Captured: ${new Date(data.created_at).toLocaleDateString()}`,
+        ];
+        if (data.pth_angle) parts.push(`PTH Angle: ${data.pth_angle}`);
+        if (data.content_id) parts.push(`Content ID: ${data.content_id}`);
+        parts.push(`\n--- FULL CONTENT ---\n`, data.content);
+        return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+      }
+
       let q = supabase
         .from("competitor_content")
         .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type, content_id")
@@ -242,7 +274,7 @@ server.registerTool(
           const titleLine = t.article_title ? `\n   Title: ${t.article_title}` : "";
           const angleLine = t.pth_angle ? `\n   PTH Angle: ${t.pth_angle}` : "";
           const contentIdLine = t.content_id ? `\n   Content ID: ${t.content_id}` : "";
-          const preview = t.content.substring(0, 300) + (t.content.length > 300 ? "..." : "");
+          const preview = full_text ? t.content : (t.content.substring(0, 300) + (t.content.length > 300 ? "..." : ""));
           return `${i + 1}. [ID: ${t.id}] [${new Date(t.created_at).toLocaleDateString()}] ${creatorName}${plat} (${typeLabel}${topicLabel})${posted}${url}${titleLine}${angleLine}${contentIdLine}\n   ${preview}`;
         }
       );
@@ -467,115 +499,6 @@ server.registerTool(
   }
 );
 
-// Tool 6: Get Competitor Content by ID
-server.registerTool(
-  "get_competitor_content",
-  {
-    title: "Get Competitor Content by ID",
-    description:
-      "Fetch the full content of a single competitor record by ID. Use when you need the complete text — not a preview.",
-    inputSchema: {
-      id: z.string().describe("The ID of the competitor content record"),
-    },
-  },
-  async ({ id }) => {
-    try {
-      const { data, error } = await supabase
-        .from("competitor_content")
-        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type, content_id")
-        .eq("id", id)
-        .maybeSingle();
-
-      if (error) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-
-      if (!data) {
-        return {
-          content: [{ type: "text" as const, text: `No content found with ID ${id}.` }],
-          isError: true,
-        };
-      }
-
-      const m = data.metadata || {};
-      const parts = [
-        `ID: ${data.id}`,
-        `Creator: ${data.creator || m.creator || "unknown"}`,
-        `Platform: ${data.platform || m.platform || "unknown"}`,
-        `Source Type: ${data.source_type || m.type || "unknown"}`,
-        `Chunk Type: ${data.chunk_type || "unknown"}`,
-        `Topic: ${data.topic || "none"}`,
-        `Article Title: ${data.article_title || "none"}`,
-        `Posted: ${data.posted_date || "unknown"}`,
-        `URL: ${data.content_url || "none"}`,
-        `Captured: ${new Date(data.created_at).toLocaleDateString()}`,
-      ];
-      if (data.pth_angle) parts.push(`PTH Angle: ${data.pth_angle}`);
-      if (data.content_id) parts.push(`Content ID: ${data.content_id}`);
-      parts.push(`\n--- FULL CONTENT ---\n`, data.content);
-
-      return {
-        content: [{ type: "text" as const, text: parts.join("\n") }],
-      };
-    } catch (err: unknown) {
-      return {
-        content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// Tool 7: List Creators
-server.registerTool(
-  "list_creators",
-  {
-    title: "List Creators",
-    description:
-      "Return all tracked creators with their item counts. Use first to see who is being tracked before drilling into a creator's content.",
-    inputSchema: {},
-  },
-  async () => {
-    try {
-      const { data, error } = await supabase
-        .from("competitor_content")
-        .select("creator, metadata")
-        .eq("archived", false);
-
-      if (error) {
-        return {
-          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
-          isError: true,
-        };
-      }
-
-      const counts: Record<string, number> = {};
-      for (const row of data || []) {
-        const name = row.creator || ((row.metadata as Record<string, unknown>)?.creator as string) || "unknown";
-        counts[name] = (counts[name] || 0) + 1;
-      }
-
-      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-
-      if (!sorted.length) {
-        return { content: [{ type: "text" as const, text: "No creators found." }] };
-      }
-
-      const lines = sorted.map(([name, count]) => `  ${name}: ${count} item${count === 1 ? "" : "s"}`);
-      return {
-        content: [{ type: "text" as const, text: `${sorted.length} creator(s) tracked:\n\n${lines.join("\n")}` }],
-      };
-    } catch (err: unknown) {
-      return {
-        content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
-        isError: true,
-      };
-    }
-  }
-);
 
 // Tool 8: List Content (grouped by content_id)
 server.registerTool(
