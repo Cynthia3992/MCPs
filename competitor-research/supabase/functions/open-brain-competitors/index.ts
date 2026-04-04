@@ -281,7 +281,7 @@ server.registerTool(
 
       const { data } = await supabase
         .from("competitor_content")
-        .select("metadata, created_at, posted_date, creator, chunk_type")
+        .select("metadata, created_at, posted_date, creator, chunk_type, topic")
         .eq("archived", false)
         .order("created_at", { ascending: false });
 
@@ -295,8 +295,11 @@ server.registerTool(
         if (m.type) types[m.type as string] = (types[m.type as string] || 0) + 1;
         const creatorName = r.creator || (m.creator as string);
         if (creatorName) creators[creatorName] = (creators[creatorName] || 0) + 1;
-        if (Array.isArray(m.topics))
+        if (r.topic) {
+          topics[r.topic] = (topics[r.topic] || 0) + 1;
+        } else if (Array.isArray(m.topics)) {
           for (const t of m.topics) topics[t as string] = (topics[t as string] || 0) + 1;
+        }
         if (r.chunk_type) chunkTypes[r.chunk_type] = (chunkTypes[r.chunk_type] || 0) + 1;
       }
 
