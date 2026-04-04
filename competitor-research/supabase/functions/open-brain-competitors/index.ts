@@ -178,13 +178,14 @@ server.registerTool(
       topic: z.string().optional().describe("Filter by topic"),
       days: z.number().optional().describe("Only content from the last N days"),
       platform: z.string().optional().describe("Filter by platform: substack, linkedin, twitter, youtube, blog, tiktok"),
+      content_id: z.string().optional().describe("Filter to all chunks from a specific piece of content"),
     },
   },
-  async ({ limit, offset, creator, source_type, chunk_type, topic, days, platform }) => {
+  async ({ limit, offset, creator, source_type, chunk_type, topic, days, platform, content_id }) => {
     try {
       let q = supabase
         .from("competitor_content")
-        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type")
+        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type, content_id")
         .eq("archived", false)
         .order("created_at", { ascending: false })
         .range(offset, offset + limit - 1);
@@ -194,6 +195,7 @@ server.registerTool(
       if (chunk_type) q = q.eq("chunk_type", chunk_type);
       if (topic) q = q.ilike("topic", `%${topic}%`);
       if (platform) q = q.ilike("platform", `%${platform}%`);
+      if (content_id) q = q.eq("content_id", content_id);
       if (days) {
         const since = new Date();
         since.setDate(since.getDate() - days);
@@ -228,6 +230,7 @@ server.registerTool(
           article_title: string | null;
           chunk_type: string | null;
           source_type: string | null;
+          content_id: string | null;
         }, i: number) => {
           const m = t.metadata || {};
           const creatorName = t.creator || (m.creator as string) || "unknown";
@@ -238,8 +241,9 @@ server.registerTool(
           const topicLabel = t.topic ? ` | ${t.topic}` : "";
           const titleLine = t.article_title ? `\n   Title: ${t.article_title}` : "";
           const angleLine = t.pth_angle ? `\n   PTH Angle: ${t.pth_angle}` : "";
+          const contentIdLine = t.content_id ? `\n   Content ID: ${t.content_id}` : "";
           const preview = t.content.substring(0, 300) + (t.content.length > 300 ? "..." : "");
-          return `${i + 1}. [ID: ${t.id}] [${new Date(t.created_at).toLocaleDateString()}] ${creatorName}${plat} (${typeLabel}${topicLabel})${posted}${url}${titleLine}${angleLine}\n   ${preview}`;
+          return `${i + 1}. [ID: ${t.id}] [${new Date(t.created_at).toLocaleDateString()}] ${creatorName}${plat} (${typeLabel}${topicLabel})${posted}${url}${titleLine}${angleLine}${contentIdLine}\n   ${preview}`;
         }
       );
 
@@ -348,9 +352,10 @@ server.registerTool(
       content_url: z.string().optional().describe("URL of the specific article, post, or video being analyzed"),
       posted_date: z.string().optional().describe("When the content was published (YYYY-MM-DD)"),
       platform: z.string().optional().describe("Platform where content was published: substack, linkedin, twitter, youtube, blog, tiktok, other"),
+      content_id: z.string().uuid().optional().describe("Group multiple chunks from the same piece of content — generate one UUID per content item and pass it to all its chunks"),
     },
   },
-  async ({ content, creator, content_url, posted_date, platform }) => {
+  async ({ content, creator, content_url, posted_date, platform, content_id }) => {
     try {
       const [embedding, metadata] = await Promise.all([
         getEmbedding(content),
@@ -365,6 +370,7 @@ server.registerTool(
         platform: platform || (metadata.platform as string) || null,
         content_url: content_url || null,
         posted_date: posted_date || null,
+        content_id: content_id || null,
       });
 
       if (error) {
@@ -460,7 +466,7 @@ server.registerTool(
     try {
       const { data, error } = await supabase
         .from("competitor_content")
-        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type")
+        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type, content_id")
         .eq("id", id)
         .maybeSingle();
 
@@ -492,6 +498,7 @@ server.registerTool(
         `Captured: ${new Date(data.created_at).toLocaleDateString()}`,
       ];
       if (data.pth_angle) parts.push(`PTH Angle: ${data.pth_angle}`);
+      if (data.content_id) parts.push(`Content ID: ${data.content_id}`);
       parts.push(`\n--- FULL CONTENT ---\n`, data.content);
 
       return {
@@ -544,6 +551,104 @@ server.registerTool(
       const lines = sorted.map(([name, count]) => `  ${name}: ${count} item${count === 1 ? "" : "s"}`);
       return {
         content: [{ type: "text" as const, text: `${sorted.length} creator(s) tracked:\n\n${lines.join("\n")}` }],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool 8: List Content (grouped by content_id)
+server.registerTool(
+  "list_content",
+  {
+    title: "List Content",
+    description:
+      "List distinct pieces of content (articles, TikToks, etc.) grouped by content_id, with chunk counts. Use to see what content has been captured at the piece level — not individual chunks.",
+    inputSchema: {
+      creator: z.string().optional().describe("Filter by creator name"),
+      days: z.number().optional().describe("Only content from the last N days"),
+      platform: z.string().optional().describe("Filter by platform"),
+    },
+  },
+  async ({ creator, days, platform }) => {
+    try {
+      let q = supabase
+        .from("competitor_content")
+        .select("content_id, article_title, creator, platform, content_url, posted_date, created_at, metadata")
+        .eq("archived", false)
+        .order("created_at", { ascending: false });
+
+      if (creator) q = q.or(`creator.ilike.%${creator}%,metadata->>creator.ilike.%${creator}%`);
+      if (platform) q = q.ilike("platform", `%${platform}%`);
+      if (days) {
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+        q = q.gte("created_at", since.toISOString());
+      }
+
+      const { data, error } = await q;
+
+      if (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      }
+
+      if (!data || !data.length) {
+        return { content: [{ type: "text" as const, text: "No content found." }] };
+      }
+
+      // Group by content_id (fallback to content_url for legacy rows without content_id)
+      const groups = new Map<string, {
+        content_id: string | null;
+        article_title: string | null;
+        creator: string | null;
+        platform: string | null;
+        content_url: string | null;
+        posted_date: string | null;
+        created_at: string;
+        metadata: Record<string, unknown>;
+        count: number;
+      }>();
+
+      for (const row of data) {
+        const key = row.content_id || row.content_url || `ungrouped-${row.created_at}`;
+        if (groups.has(key)) {
+          groups.get(key)!.count++;
+        } else {
+          groups.set(key, {
+            content_id: row.content_id,
+            article_title: row.article_title,
+            creator: row.creator,
+            platform: row.platform,
+            content_url: row.content_url,
+            posted_date: row.posted_date,
+            created_at: row.created_at,
+            metadata: (row.metadata || {}) as Record<string, unknown>,
+            count: 1,
+          });
+        }
+      }
+
+      const items = Array.from(groups.values());
+      const lines = items.map((g, i) => {
+        const m = g.metadata;
+        const creatorName = g.creator || (m.creator as string) || "unknown";
+        const plat = g.platform ? ` [${g.platform}]` : "";
+        const title = g.article_title || "Untitled";
+        const posted = g.posted_date ? ` | Posted: ${g.posted_date}` : "";
+        const url = g.content_url ? ` | ${g.content_url}` : "";
+        const idLabel = g.content_id ? `\n   Content ID: ${g.content_id}` : "";
+        return `${i + 1}. ${creatorName}${plat} | ${title} | ${g.count} chunk${g.count === 1 ? "" : "s"}${posted}${url}${idLabel}`;
+      });
+
+      return {
+        content: [{ type: "text" as const, text: `${items.length} piece(s) of content:\n\n${lines.join("\n\n")}` }],
       };
     } catch (err: unknown) {
       return {
