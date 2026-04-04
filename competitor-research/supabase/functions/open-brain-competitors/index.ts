@@ -82,21 +82,23 @@ server.registerTool(
   {
     title: "Search Competitor Content",
     description:
-      "Search competitor and creator research by meaning. Use when analyzing competitor strategies, finding patterns across creators, or looking up specific creator content.",
+      "Search competitor and creator research by meaning. Use for thematic/cross-creator research and PTH angle discovery. Optionally scope to a single creator for semantic search within their content.",
     inputSchema: {
       query: z.string().describe("What to search for"),
       limit: z.number().optional().default(10),
-      threshold: z.number().optional().default(0.5),
+      threshold: z.number().optional().default(0.3),
+      creator: z.string().optional().describe("Scope search to a specific creator"),
     },
   },
-  async ({ query, limit, threshold }) => {
+  async ({ query, limit, threshold, creator }) => {
     try {
       const qEmb = await getEmbedding(query);
+      const filter = creator ? { creator } : {};
       const { data, error } = await supabase.rpc("match_competitor_content", {
         query_embedding: qEmb,
         match_threshold: threshold,
         match_count: limit,
-        filter: {},
+        filter,
       });
 
       if (error) {
@@ -113,17 +115,29 @@ server.registerTool(
       }
 
       const results = data.map(
-        (t: { content: string; metadata: Record<string, unknown>; similarity: number; created_at: string }, i: number) => {
+        (t: {
+          content: string;
+          metadata: Record<string, unknown>;
+          similarity: number;
+          created_at: string;
+          creator?: string | null;
+          platform?: string | null;
+          source_type?: string | null;
+          topic?: string | null;
+          pth_angle?: string | null;
+          article_title?: string | null;
+        }, i: number) => {
           const m = t.metadata || {};
           const parts = [
             `--- Result ${i + 1} (${(t.similarity * 100).toFixed(1)}% match) ---`,
             `Captured: ${new Date(t.created_at).toLocaleDateString()}`,
-            `Creator: ${m.creator || "unknown"}`,
-            `Platform: ${m.platform || "unknown"}`,
-            `Type: ${m.type || "unknown"}`,
+            `Creator: ${t.creator || m.creator || "unknown"}`,
+            `Platform: ${t.platform || m.platform || "unknown"}`,
+            `Type: ${t.source_type || m.type || "unknown"}`,
           ];
-          if (Array.isArray(m.topics) && m.topics.length)
-            parts.push(`Topics: ${(m.topics as string[]).join(", ")}`);
+          if (t.article_title) parts.push(`Title: ${t.article_title}`);
+          if (t.topic) parts.push(`Topic: ${t.topic}`);
+          if (t.pth_angle) parts.push(`PTH Angle: ${t.pth_angle}`);
           if (Array.isArray(m.key_takeaways) && m.key_takeaways.length)
             parts.push(`Takeaways: ${(m.key_takeaways as string[]).join("; ")}`);
           parts.push(`\n${t.content}`);
@@ -154,28 +168,31 @@ server.registerTool(
   {
     title: "List Competitor Content",
     description:
-      "List recently captured competitor content with optional filters by creator, type, topic, or time range.",
+      "List captured competitor content with filters. Use for single-creator audits and chronological browsing. This is your primary view for weekly research sessions — default to filtering by creator and/or last 7 days.",
     inputSchema: {
       limit: z.number().optional().default(10),
+      offset: z.number().optional().default(0).describe("Pagination offset"),
       creator: z.string().optional().describe("Filter by creator name"),
-      type: z.string().optional().describe("Filter by type: article_summary, strategy_observation, content_analysis, audience_insight, positioning_note"),
-      topic: z.string().optional().describe("Filter by topic tag"),
+      source_type: z.string().optional().describe("Filter by source type: article_summary, strategy_observation, content_analysis, audience_insight, positioning_note"),
+      chunk_type: z.string().optional().describe("Filter by chunk type"),
+      topic: z.string().optional().describe("Filter by topic"),
       days: z.number().optional().describe("Only content from the last N days"),
       platform: z.string().optional().describe("Filter by platform: substack, linkedin, twitter, youtube, blog, tiktok"),
     },
   },
-  async ({ limit, creator, type, topic, days, platform }) => {
+  async ({ limit, offset, creator, source_type, chunk_type, topic, days, platform }) => {
     try {
       let q = supabase
         .from("competitor_content")
-        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform")
+        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type")
         .eq("archived", false)
         .order("created_at", { ascending: false })
-        .limit(limit);
+        .range(offset, offset + limit - 1);
 
-      if (creator) q = q.ilike("creator", `%${creator}%`);
-      if (type) q = q.contains("metadata", { type });
-      if (topic) q = q.contains("metadata", { topics: [topic] });
+      if (creator) q = q.or(`creator.ilike.%${creator}%,metadata->>creator.ilike.%${creator}%`);
+      if (source_type) q = q.eq("source_type", source_type);
+      if (chunk_type) q = q.eq("chunk_type", chunk_type);
+      if (topic) q = q.ilike("topic", `%${topic}%`);
       if (platform) q = q.ilike("platform", `%${platform}%`);
       if (days) {
         const since = new Date();
@@ -197,14 +214,32 @@ server.registerTool(
       }
 
       const results = data.map(
-        (t: { id: string; content: string; metadata: Record<string, unknown>; created_at: string; creator: string | null; content_url: string | null; posted_date: string | null; platform: string | null }, i: number) => {
+        (t: {
+          id: string;
+          content: string;
+          metadata: Record<string, unknown>;
+          created_at: string;
+          creator: string | null;
+          content_url: string | null;
+          posted_date: string | null;
+          platform: string | null;
+          pth_angle: string | null;
+          topic: string | null;
+          article_title: string | null;
+          chunk_type: string | null;
+          source_type: string | null;
+        }, i: number) => {
           const m = t.metadata || {};
           const creatorName = t.creator || (m.creator as string) || "unknown";
-          const tags = Array.isArray(m.topics) ? (m.topics as string[]).join(", ") : "";
           const plat = t.platform ? ` [${t.platform}]` : "";
           const url = t.content_url ? ` | ${t.content_url}` : "";
           const posted = t.posted_date ? ` | Posted: ${t.posted_date}` : "";
-          return `${i + 1}. [ID: ${t.id}] [${new Date(t.created_at).toLocaleDateString()}] ${creatorName}${plat} (${m.type || "??"}${tags ? " - " + tags : ""})${posted}${url}\n   ${t.content.substring(0, 150)}${t.content.length > 150 ? "..." : ""}`;
+          const typeLabel = t.source_type || (m.type as string) || "??";
+          const topicLabel = t.topic ? ` | ${t.topic}` : "";
+          const titleLine = t.article_title ? `\n   Title: ${t.article_title}` : "";
+          const angleLine = t.pth_angle ? `\n   PTH Angle: ${t.pth_angle}` : "";
+          const preview = t.content.substring(0, 300) + (t.content.length > 300 ? "..." : "");
+          return `${i + 1}. [ID: ${t.id}] [${new Date(t.created_at).toLocaleDateString()}] ${creatorName}${plat} (${typeLabel}${topicLabel})${posted}${url}${titleLine}${angleLine}\n   ${preview}`;
         }
       );
 
@@ -212,7 +247,7 @@ server.registerTool(
         content: [
           {
             type: "text" as const,
-            text: `${data.length} competitor content item(s):\n\n${results.join("\n\n")}`,
+            text: `${data.length} competitor content item(s) (offset ${offset}):\n\n${results.join("\n\n")}`,
           },
         ],
       };
@@ -306,7 +341,7 @@ server.registerTool(
   {
     title: "Capture Competitor Content",
     description:
-      "Save competitor or creator research to the competitor database. Use for article summaries, strategy observations, audience insights, or any competitive intelligence.",
+      "Save competitor or creator research to the competitor database. Use for article summaries, strategy observations, audience insights, or any competitive intelligence. Great for manually adding content from creators you've discovered but don't want to fully track.",
     inputSchema: {
       content: z.string().describe("The competitor content or research note to capture. Include what you observed."),
       creator: z.string().optional().describe("Name of the creator or competitor"),
@@ -366,7 +401,7 @@ server.registerTool(
   {
     title: "Archive Competitor Content",
     description:
-      "Archive competitor content by ID so it no longer appears in searches. Use when research is outdated or no longer relevant.",
+      "Archive competitor content by ID so it no longer appears in searches. Use to mark content as reviewed/processed or when research is no longer relevant.",
     inputSchema: {
       id: z.string().describe("The ID of the competitor content to archive"),
     },
@@ -425,9 +460,9 @@ server.registerTool(
     try {
       const { data, error } = await supabase
         .from("competitor_content")
-        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform")
+        .select("id, content, metadata, created_at, creator, content_url, posted_date, platform, pth_angle, topic, article_title, chunk_type, source_type")
         .eq("id", id)
-        .single();
+        .maybeSingle();
 
       if (error) {
         return {
@@ -448,17 +483,67 @@ server.registerTool(
         `ID: ${data.id}`,
         `Creator: ${data.creator || m.creator || "unknown"}`,
         `Platform: ${data.platform || m.platform || "unknown"}`,
+        `Source Type: ${data.source_type || m.type || "unknown"}`,
+        `Chunk Type: ${data.chunk_type || "unknown"}`,
+        `Topic: ${data.topic || "none"}`,
+        `Article Title: ${data.article_title || "none"}`,
         `Posted: ${data.posted_date || "unknown"}`,
         `URL: ${data.content_url || "none"}`,
-        `Type: ${m.type || "unknown"}`,
-        `Topics: ${Array.isArray(m.topics) ? (m.topics as string[]).join(", ") : "none"}`,
         `Captured: ${new Date(data.created_at).toLocaleDateString()}`,
-        `\n--- FULL CONTENT ---\n`,
-        data.content,
       ];
+      if (data.pth_angle) parts.push(`PTH Angle: ${data.pth_angle}`);
+      parts.push(`\n--- FULL CONTENT ---\n`, data.content);
 
       return {
         content: [{ type: "text" as const, text: parts.join("\n") }],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// Tool 7: List Creators
+server.registerTool(
+  "list_creators",
+  {
+    title: "List Creators",
+    description:
+      "Return all tracked creators with their item counts. Use first to see who is being tracked before drilling into a creator's content.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const { data, error } = await supabase
+        .from("competitor_content")
+        .select("creator, metadata")
+        .eq("archived", false);
+
+      if (error) {
+        return {
+          content: [{ type: "text" as const, text: `Error: ${error.message}` }],
+          isError: true,
+        };
+      }
+
+      const counts: Record<string, number> = {};
+      for (const row of data || []) {
+        const name = row.creator || ((row.metadata as Record<string, unknown>)?.creator as string) || "unknown";
+        counts[name] = (counts[name] || 0) + 1;
+      }
+
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+
+      if (!sorted.length) {
+        return { content: [{ type: "text" as const, text: "No creators found." }] };
+      }
+
+      const lines = sorted.map(([name, count]) => `  ${name}: ${count} item${count === 1 ? "" : "s"}`);
+      return {
+        content: [{ type: "text" as const, text: `${sorted.length} creator(s) tracked:\n\n${lines.join("\n")}` }],
       };
     } catch (err: unknown) {
       return {
