@@ -281,7 +281,7 @@ server.registerTool(
 
       const { data } = await supabase
         .from("competitor_content")
-        .select("metadata, created_at, creator, chunk_type")
+        .select("metadata, created_at, posted_date, creator, chunk_type")
         .eq("archived", false)
         .order("created_at", { ascending: false });
 
@@ -305,9 +305,15 @@ server.registerTool(
           .sort((a, b) => b[1] - a[1])
           .slice(0, 10);
 
+      const postedDates = (data || []).map(r => r.posted_date).filter(Boolean) as string[];
+      const postedRange = postedDates.length
+        ? `${postedDates.reduce((a, b) => a < b ? a : b)} → ${postedDates.reduce((a, b) => a > b ? a : b)}`
+        : "N/A";
+
       const lines: string[] = [
         `Total competitor content items: ${count}`,
-        `Date range: ${
+        `Posted date range: ${postedRange}`,
+        `Captured date range: ${
           data?.length
             ? new Date(data[data.length - 1].created_at).toLocaleDateString() +
               " → " +
