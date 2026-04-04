@@ -281,13 +281,14 @@ server.registerTool(
 
       const { data } = await supabase
         .from("competitor_content")
-        .select("metadata, created_at, creator")
+        .select("metadata, created_at, creator, chunk_type")
         .eq("archived", false)
         .order("created_at", { ascending: false });
 
       const types: Record<string, number> = {};
       const topics: Record<string, number> = {};
       const creators: Record<string, number> = {};
+      const chunkTypes: Record<string, number> = {};
 
       for (const r of data || []) {
         const m = (r.metadata || {}) as Record<string, unknown>;
@@ -296,6 +297,7 @@ server.registerTool(
         if (creatorName) creators[creatorName] = (creators[creatorName] || 0) + 1;
         if (Array.isArray(m.topics))
           for (const t of m.topics) topics[t as string] = (topics[t as string] || 0) + 1;
+        if (r.chunk_type) chunkTypes[r.chunk_type] = (chunkTypes[r.chunk_type] || 0) + 1;
       }
 
       const sort = (o: Record<string, number>): [string, number][] =>
@@ -327,6 +329,11 @@ server.registerTool(
       if (Object.keys(topics).length) {
         lines.push("", "Top topics:");
         for (const [k, v] of sort(topics)) lines.push(`  ${k}: ${v}`);
+      }
+
+      if (Object.keys(chunkTypes).length) {
+        lines.push("", "Chunk types:");
+        for (const [k, v] of sort(chunkTypes)) lines.push(`  ${k}: ${v}`);
       }
 
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
