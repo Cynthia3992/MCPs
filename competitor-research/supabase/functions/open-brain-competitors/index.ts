@@ -88,12 +88,15 @@ server.registerTool(
       limit: z.number().optional().default(20),
       threshold: z.number().optional().default(0.3),
       creator: z.string().optional().describe("Scope search to a specific creator"),
+      platform: z.string().optional().describe("Scope search to a specific platform: substack, tiktok, youtube, linkedin, twitter, blog"),
     },
   },
-  async ({ query, limit, threshold, creator }) => {
+  async ({ query, limit, threshold, creator, platform }) => {
     try {
       const qEmb = await getEmbedding(query);
-      const filter = creator ? { creator } : {};
+      const filter: Record<string, string> = {};
+      if (creator) filter.creator = creator;
+      if (platform) filter.platform = platform;
       const { data, error } = await supabase.rpc("match_competitor_content", {
         query_embedding: qEmb,
         match_threshold: threshold,
